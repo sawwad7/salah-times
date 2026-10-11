@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <title>Astronomical Prayer Times</title>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 440px;
+      margin: 0 auto;
+      padding: 24px 16px;
+      background: #0f172a;
+      color: #f8fafc;
+      min-height: 100vh;
+    }
+    h2 { font-size: 1.35rem; text-align: center; margin-bottom: 4px; font-weight: 700; }
+    p.sub { text-align: center; color: #94a3b8; font-size: 0.78rem; margin-bottom: 16px; }
+    #status { font-size: 0.8rem; color: #38bdf8; text-align: center; margin-bottom: 14px; min-height: 1.2em; }
+    button {
+      width: 100%;
+      padding: 13px;
+      border-radius: 10px;
+      border: none;
+      background: #0284c7;
+      color: white;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      margin-bottom: 16px;
+      transition: opacity 0.2s;
+    }
+    button:active { opacity: 0.8; }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .details { display: flex; flex-direction: column; }
+    .name { font-weight: 600; font-size: 1rem; color: #f1f5f9; }
+    .definition { font-size: 0.72rem; color: #94a3b8; margin-top: 2px; }
+    .time { font-size: 1.15rem; font-weight: 700; color: #38bdf8; }
+  </style>
+</head>
+<body>
+
+  <h2>Astronomical Prayer Times</h2>
+  <p class="sub">Local Solar Physics &bull; IslamQA (Fatwa 9940) Exact Criteria</p>
+  <button onclick="getGPS()">Update From Phone GPS</button>
+  <div id="status">Acquiring position...</div>
+  <div id="times"></div>
+
+  <script>
+    // Register Service Worker for 100% offline access
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+
+    // --- NOAA / Jean Meeus Astronomy Engine ---
+    const rad = (d) => (d * Math.PI) / 180;
+    const deg = (r) => (r * 180) / Math.PI;
+
+    function getJulianDay(date) {
+      return (date.getTime() / 86400000) + 2440587.5;
+    }
+
+    function calculateSolarParameters(jd) {
+      const T = (jd - 2451545.0) / 36525.0;
+      const L0 = 280.46646 + T * (36000.76983 + T * 0.0003032);
+      const M = 357.52911 + T * (35999.05029 - 0.0001537 * T);
+      const e = 0.016708634 - T * (0.000042037 + 0.0000001267 * T);
+      
+      const C = (1.914602 - T * (0.004817 + 0.000014 * T)) * Math.sin(rad(M))
+              + (0.019993 - 0.000101 * T) * Math.sin(rad(2 * M))
+              + 0.000289 * Math.sin(rad(3 * M));
+      
+      const sunTrueLong = L0 + C;
+      const omega = 125.04 - 1934.136 * T;
+      const lambda = sunTrueLong - 0.00569 - 0.00478 * Math.sin(rad(omega));
+      
+      const eps0 = 23 + (26 + ((21.448 - T * (46.815 + T * (0.00059 - T * 0.001813)))) / 60) / 60;
+      const eps = eps0 + 0.00256 * Math.cos(rad(omega));
+      
+      const sinDec = Math.sin(rad(eps)) * Math.sin(rad(lambda));
+      const delta = deg(Math.asin(sinDec));
+      
+      const y = Math.tan(rad(eps / 2)) ** 2;
+      const eqTime = 4 * deg(
+        y * Math.sin(2 * rad(L0)) - 2 * e * Math.sin(rad(M)) + 
+        4 * e * y * Math.sin(rad(M)) * Math.cos(2 * rad(L0)) - 
+        0.5 * (y ** 2) * Math.sin(4 * rad(L0)) - 1.25 * (e ** 2) * Math.sin(2 * rad(M))
+      );
+
+      return { delta, eqTime };
+    }
+
+    function calculateTimes(lat, lng) {
+      const now = new Date();
+      const tzOffset = -now.getTimezoneOffset() / 60;
+      const jd = getJulianDay(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0));
+      const { delta, eqTime } = calculateSolarParameters(jd);
+
+      // Solar Noon (Meridian Transit) in local standard decimal hours
+      const solarNoon = (720 - 4 * lng - eqTime + tzOffset * 60) / 60;
+
+      function getHourAngle(altitude) {
+        const cosH = (Math.sin(rad(altitude)) - Math.sin(rad(lat)) * Math.sin(rad(delta))) /
+                     (Math.cos(rad(lat)) * Math.cos(rad(delta)));
+        if (cosH > 1 || cosH < -1) return null;
+        return deg(Math.acos(cosH));
+      }
+
+      // Fajr & Isha: -18.0° Astronomical Twilight (IslamQA: true dawn & complete disappearance of twilight)
+      const H_twilight = getHourAngle(-18.0);
+      const fajrHours = H_twilight ? solarNoon - (H_twilight / 15) : null;
+      const ishaHours = H_twilight ? solarNoon + (H_twilight / 15) : null;
+
+      // Sunrise & Maghrib: -0.833° (IslamQA: upper limb sunrise & complete sunset disc)
+      const H_sun = getHourAngle(-0.833);
+      const sunriseHours = H_sun ? solarNoon - (H_sun / 15) : null;
+      const maghribHours = H_sun ? solarNoon + (H_sun / 15) : null;
+
+      // Dhuhr: Zawal (Solar transit + 1 min margin past zenith)
+      const dhuhrHours = solarNoon + (1 / 60);
+
+      // Asr: IslamQA exact condition -> shadow = object height + noon shadow
+      const noonAltitude = 90 - Math.abs(lat - delta);
+      const noonShadow = 1 / Math.tan(rad(noonAltitude));
+      const asrShadow = 1.0 + noonShadow;
+      const asrAltitude = deg(Math.atan(1 / asrShadow));
+      const H_asr = getHourAngle(asrAltitude);
+      const asrHours = H_asr ? solarNoon + (H_asr / 15) : null;
+
+      function fmt(h) {
+        if (h === null) return "--:--";
+        let totalMinutes = Math.round(h * 60);
+        let hours = Math.floor(totalMinutes / 60) % 24;
+        let mins = totalMinutes % 60;
+        const d = new Date();
+        d.setHours(hours, mins, 0, 0);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+
+      document.getElementById('times').innerHTML = `
+        <div class="card">
+          <div class="details">
+            <span class="name">Fajr</span>
+            <span class="definition">True Dawn (-18.0° Twilight)</span>
+          </div>
+          <span class="time">${fmt(fajrHours)}</span>
+        </div>
+        <div class="card">
+          <div class="details">
+            <span class="name">Sunrise</span>
+            <span class="definition">Upper limb reaches horizon</span>
+          </div>
+          <span class="time">${fmt(sunriseHours)}</span>
+        </div>
+        <div class="card">
+          <div class="details">
+            <span class="name">Dhuhr</span>
+            <span class="definition">Zawal (Post-meridian tilt)</span>
+          </div>
+          <span class="time">${fmt(dhuhrHours)}</span>
+        </div>
+        <div class="card">
+          <div class="details">
+            <span class="name">Asr</span>
+            <span class="definition">Shadow = 1x Object + Noon Shadow</span>
+          </div>
+          <span class="time">${fmt(asrHours)}</span>
+        </div>
+        <div class="card">
+          <div class="details">
+            <span class="name">Maghrib</span>
+            <span class="definition">Complete Sunset (-0.833°)</span>
+          </div>
+          <span class="time">${fmt(maghribHours)}</span>
+        </div>
+        <div class="card">
+          <div class="details">
+            <span class="name">Isha</span>
+            <span class="definition">Twilight Extinction (-18.0° Twilight)</span>
+          </div>
+          <span class="time">${fmt(ishaHours)}</span>
+        </div>
+      `;
+
+      localStorage.setItem('gps_coords', JSON.stringify({ lat, lng }));
+    }
+
+    function getGPS() {
+      if (!navigator.geolocation) {
+        document.getElementById('status').innerText = "GPS not supported on this device";
+        return;
+      }
+      document.getElementById('status').innerText = "Acquiring GPS coordinates...";
+      navigator.geolocation.getCurrentPosition(
+        (p) => {
+          const lat = p.coords.latitude;
+          const lng = p.coords.longitude;
+          document.getElementById('status').innerText = `GPS: ${lat.toFixed(4)}°, ${lng.toFixed(4)}°`;
+          calculateTimes(lat, lng);
+        },
+        () => {
+          const cache = localStorage.getItem('gps_coords');
+          if (cache) {
+            document.getElementById('status').innerText = "No GPS signal. Using cached location.";
+            const { lat, lng } = JSON.parse(cache);
+            calculateTimes(lat, lng);
+          } else {
+            document.getElementById('status').innerText = "Allow location access to calculate.";
+          }
+        },
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    }
+
+    window.onload = () => {
+      const cache = localStorage.getItem('gps_coords');
+      if (cache) {
+        const { lat, lng } = JSON.parse(cache);
+        calculateTimes(lat, lng);
+      } else {
+        getGPS();
+      }
+    };
+  </script>
+</body>
+</html>
